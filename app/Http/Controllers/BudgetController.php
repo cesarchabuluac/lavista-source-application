@@ -4,10 +4,14 @@ namespace App\Http\Controllers;
 
 use App\BankAccount;
 use App\BankAccountStatement;
+use App\CreditNote;
+use App\Expense;
 use App\Income;
+use App\Payment;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class BudgetController extends Controller
 {
@@ -29,8 +33,8 @@ class BudgetController extends Controller
      */
     public function index(Request $request)
     {
-        $max_month = 6;
-        $year = 2020;
+        $max_month = 12;
+        $year = 2021;
         $date_from = $year . '-01-01';
         $days_to = cal_days_in_month(CAL_GREGORIAN, $max_month, $year);
         $date_to = $year . '-' . sprintf('%02d', $max_month) . '-' . sprintf('%02d', $days_to);
@@ -48,7 +52,8 @@ class BudgetController extends Controller
             '24383-mxn' => 'mxn',
         ];
 
-        // $bank_account_balances = $this->getOpeningBankAccountBalances($bank_accounts, $year, $max_month);
+        $bank_account_balances = $this->getOpeningBankAccountBalances($bank_accounts, $year, $max_month);
+        Log::info($bank_account_balances);
     }
 
     /***
@@ -66,6 +71,7 @@ class BudgetController extends Controller
             foreach ($bank_accounts as $bank_account) {
                 $balance = $this->getBankAccountBalance($bank_account, $date);
                 $b_a = BankAccount::find($bank_account);
+                // Log::info($b_a);
                 $balances[$bank_account] = $balance;
             }
             $bank_account_balances[$month] = $balances;
@@ -83,99 +89,93 @@ class BudgetController extends Controller
         return $bank_account_balances;
     }
 
-    protected function getBankAccountBalance($id_bank_account, $date){
-        
-        $bank_account = BankAccountStatement::where(['id_bank_account' => $id_bank_account])->first();
+    protected function getBankAccountBalance($id_bank_account, $date)
+    {
+
+        $bank_account = BankAccountStatement::where('id_bank_account', $id_bank_account)->first();
         $previous_balance = $bank_account->previous_balance;
-        $currency = $bank_account->bankAccount->currency;
+        $currency = $bank_account->bankAccount->currency; //currencie->id_currency;
 
         $incomes_total = 0;
 
+        //First Day on year
+        $firstDayOfYear = "2022-01-01";
+
+
         //First income
         $Incomes = Income::where('id_bank_account', $id_bank_account)
-        ->where('deposit_date', '>=', '')
-        if (($Incomes = Incomes::find()
-            ->where(['id_bank_account' => $id_bank_account])
-            ->andWhere(['>=', 'deposit_date', BankAccountStatements::START_DATE])
-            ->andWhere("deposit_date <'".$date."'")
-            ->all()) !== null){
+            ->where('deposit_date', '>=', $firstDayOfYear)
+            ->where('deposit_date', '<' . $date)->get();
+
+        if (!empty($Incomes)) {
             foreach ($Incomes as $key => $income) {
                 $incomes_total += $income->amount;
             }
         }
 
-        $credit_notes_total = 0;
-        if (($credit_notes = CreditNotes::find()
-            ->where(['id_bank_account' => $id_bank_account])
-            ->andWhere(['>=', 'date', BankAccountStatements::START_DATE])
-            ->andWhere("date <'".$date."'")
-            ->all()) !== null){
 
+        $credit_notes_total = 0;
+        $credit_notes = CreditNote::where(['id_bank_account' => $id_bank_account])
+            ->where('date', '>=', $firstDayOfYear)
+            ->where('date', '<', $date)->get();
+
+        if (!empty($credit_notes)) {
             foreach ($credit_notes as $key => $credit_note) {
                 $credit_notes_total += $credit_note->totalmxn;
             }
         }
 
-
         $payments_sum = 0;
-        if (($Payments = Payments::find()
-            ->where(['id_bank_account' => $id_bank_account])
-            ->andWhere(['currency' => $currency])
-            ->andWhere(['>=', 'deposit_date', BankAccountStatements::START_DATE])
-            ->andWhere(['bool_has_conversion' => false])
-            ->andWhere("deposit_date <'".$date."'")
-            ->all()) !== null){
+        $Payments = Payment::where('id_bank_account', $id_bank_account)
+            ->where('currency', $currency)
+            ->where('deposit_date', '>=', $firstDayOfYear)
+            ->where('bool_has_conversion', false)
+            ->where('deposit_date', '<', $date)->get();
+
+        if (!empty($Payments)) {
             foreach ($Payments as $key => $payment) {
-                if($currency == 'MXN'){
+                if ($currency == 'MXN') {
                     $debit = $payment->totalmxn;
-                } else if($currency == 'USD'){
+                } else if ($currency == 'USD') {
                     $debit = $payment->totalusd;
                 }
                 $payments_sum += $debit;
             }
         }
 
-        if (($Payments = Payments::find()
-            ->where(['id_bank_account' => $id_bank_account])
-            ->andWhere(['bool_has_conversion' => true])
-            ->andWhere(['conversion_currency' => $currency]) /**/
-            ->andWhere("deposit_date <'".$date."'")
-            ->all()) !== null){
-            foreach ($Payments as $key => $payment) {
+        $PaymentConversions =  Payment::where('id_bank_account', $id_bank_account)
+            ->where('conversion_currency', $currency)
+            ->where('bool_has_conversion', true)
+            ->where('deposit_date', '<', $date)->get();
+
+        if (!empty($PaymentConversions)) {
+            foreach ($PaymentConversions as $key => $payment) {
                 $payments_sum += $payment->conversion_amount;
             }
         }
 
 
-        /*
-
-            ****************** PAYMENTS - CONVERSION  ********************
-
-        */
-        // if($date == '2020-08-01' && $id_bank_account == '8774-usd'){
-        //     die($payments_sum);
-        // }
-
+        /******************* PAYMENTS - CONVERSION  *********************/
 
         $expenses_sum = 0;
-        if (($Expenses = Expenses::find()
-            ->where(['id_bank_account' => $id_bank_account])
-            ->andWhere('check_uncashed_active = 0')
-            ->andWhere(['>=', 'date', BankAccountStatements::START_DATE])
-            ->andWhere("date <'".$date."'")
-            ->all()) !== null){
+        $Expenses = Expense::where('id_bank_account', $id_bank_account)
+            ->where('check_uncashed_active', 0)
+            ->where('date', '>=', $firstDayOfYear)
+            ->where('date',  '<', $date)->get();
+
+        if (!empty($Expenses)) {
             foreach ($Expenses as $key => $expense) {
                 $expenses_sum += $expense->amount;
             }
         }
-        if (($Expenses_cashedmode = Expenses::find()
-            ->where(['id_bank_account' => $id_bank_account])
-            ->andWhere('check_uncashed_active = 1')
-            ->andWhere('check_is_cashed = 1')
-            ->andWhere(['>=', 'check_cashed_date', BankAccountStatements::START_DATE])
-            ->andWhere("check_cashed_date <'".$date."'")
-            ->all()) !== null){
-            foreach ($Expenses_cashedmode as $key => $expense) {
+
+        $ExpensesCashedmode = Expense::where('id_bank_account', $id_bank_account)
+            ->where('check_uncashed_active', 1)
+            ->where('check_is_cashed', 1)
+            ->where('check_cashed_date', '>=', $firstDayOfYear)
+            ->where('check_cashed_date',  '<', $date)->get();
+        if (!empty($ExpensesCashedmode)) {
+            foreach ($ExpensesCashedmode as $key => $expense) {
                 $expenses_sum += $expense->amount;
             }
         }
