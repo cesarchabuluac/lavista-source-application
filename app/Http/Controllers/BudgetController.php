@@ -9,19 +9,21 @@ use App\BudgetCategory;
 use App\CreditNote;
 use App\ExchangeRate;
 use App\Expense;
+use App\Exports\SourceAndApplication;
 use App\ExRateSourceAndApp;
 use App\FeeConcept;
 use App\Income;
 use App\Payment;
 use App\PaymentDetail;
 use Carbon\Carbon;
-use DateTime;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Facades\Excel;
 
 class BudgetController extends Controller
 {
+    protected $excel;
 
     /**
      * Create a new controller instance.
@@ -30,7 +32,6 @@ class BudgetController extends Controller
      */
     public function __construct()
     {
-        $this->middleware('auth');
     }
 
     /**
@@ -152,8 +153,272 @@ class BudgetController extends Controller
             'bank_account_balances_totals' => $bank_account_balances_totals,
             'concept_ids' => $concept_ids,
         );
-        Log::info(json_encode($data));
 
+        $today_m = $data['today_m'];
+        $year = $data['year'];
+        $date_from = $data['date_from'];
+        $date_to = $data['date_to'];
+        $budgets_result = $data['budgets_result'];
+        $expenses_result = $data['expenses_result'];
+        $budget_concepts_result = $data['budget_concepts_result'];
+        $budget_concepts_description = $data['budget_concepts_description'];
+        $budget_categories_result = $data['budget_categories_result'];
+        $data_payment_totals = $data['data_payment_totals'];
+        $data_credit_notes_totals = $data['data_credit_notes_totals'];
+        $statements_data = $data['statements_data'];
+        $data_concepts_total = $data['data_concepts_total'];
+        $exchange_rate_conversions = $data['exchange_rate_conversions'];
+        $exchange_rate_adjustments = $data['exchange_rate_adjustments'];
+        $month_names = $data['month_names'];
+        $budget_hoa_dues = $data['budget_hoa_dues'];
+        $bank_accounts = $data['bank_accounts'];
+        $bank_account_balances = $data['bank_account_balances'];
+        $bank_account_names = $data['bank_account_names'];
+        $bank_account_balances_totals = $data['bank_account_balances_totals'];
+        $concept_ids = $data['concept_ids'];
+
+        $budget_data = array(
+            'today_m' => $today_m,
+            'budgets_result' => $budgets_result,
+            'expenses_result' => $expenses_result,
+            'budget_concepts_result' => $budget_concepts_result,
+            'budget_concepts_description' => $budget_concepts_description,
+            'budget_categories_result' => $budget_categories_result,
+        );
+
+        // return Excel::download(new SourceAndApplication, 'users.xlsx');
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $spreadsheet->getProperties()->setCreator('Oviedo Sucesores 2020')
+            ->setLastModifiedBy('Oviedo Sucesores')
+            ->setTitle('Source And Application')
+            ->setSubject('OSU Management Report')
+            ->setDescription('HOA Admin Generated Document')
+            ->setKeywords('Office 2007 openxml php')
+            ->setCategory('OSU Reports');
+        $spreadsheet->setActiveSheetIndex(0);
+
+        //Insert logo
+        $drawing = new \PhpOffice\PhpSpreadsheet\WorkSheet\Drawing();
+        $drawing->setName('Logo');
+        $drawing->setDescription('Logo');
+        $path = public_path('assets/img/logo.png');
+
+        $drawing->setPath($path);
+        $drawing->setHeight(90);
+        $drawing->setOffsetX(120);
+        $drawing->setWorksheet($spreadsheet->getActiveSheet());
+
+        $spreadsheet->getActiveSheet()->getStyle('A1:DD1')->applyFromArray(
+            [
+                'fill' => [
+                    'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                    'color' => ['argb' => 'FFFFFFFF'],
+                ],
+            ]
+        );
+
+        //Set (logo) row height
+        $spreadsheet->getActiveSheet()->getRowDimension(1)->setRowHeight(74);
+
+        $arr['concept'] = array('column' => 'A', 'name' => '');
+        $arr[1] = array('column' => 'B', 'name' => 'JANUARY');
+        $arr[2] = array('column' => 'C', 'name' => 'FEBRUARY');
+        $arr[3] = array('column' => 'D', 'name' => 'MARCH');
+        $arr[4] = array('column' => 'E', 'name' => 'APRIL');
+        $arr[5] = array('column' => 'F', 'name' => 'MAY');
+        $arr[6] = array('column' => 'G', 'name' => 'JUNE');
+        $arr[7] = array('column' => 'H', 'name' => 'JULY');
+        $arr[8] = array('column' => 'I', 'name' => 'AUGUST');
+        $arr[9] = array('column' => 'J', 'name' => 'SEPTEMBER');
+        $arr[10] = array('column' => 'K', 'name' => 'OCTUBRE');
+        $arr[11] = array('column' => 'L', 'name' => 'NOVEMBER');
+        $arr[12] = array('column' => 'M', 'name' => 'DECEMBER');
+        $arr['ytd_total'] = array('column' => 'N', 'name' => 'YTD TOTAL');
+        $arr['annual_budget'] = array('column' => 'O', 'name' => 'BUDGET ASSIGNED');
+        $arr['available'] = array('column' => 'P', 'name' => 'BUDGET AVAILABLE');
+
+        $concept_col = $arr['concept']['column'];
+        $ytd_total_col = $arr['ytd_total']['column'];
+        $available_col = $arr['available']['column'];
+        $annual_budget_col = $arr['annual_budget']['column'];
+
+        $current_row = 3;
+
+        //OPENING BALANCE SECTION
+        foreach ($bank_accounts as $bank_account) {
+            foreach (range(1, 12) as $month) {
+                $month_col = $arr[$month]['column'];
+                $amount = $bank_account_balances[$month][$bank_account];
+
+                //write amount for the current month
+                $spreadsheet->getActiveSheet()
+                    ->setCellValue($month_col . $current_row, $amount);
+            }
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($ytd_total_col . $current_row, $bank_account_balances[1][$bank_account]);
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($concept_col . $current_row, $bank_account_names[$bank_account]);
+
+            foreach ($arr as $value) {
+                //paint yellow row
+                $this->setYellowFormat($value['column'] . $current_row, $spreadsheet);
+                $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+            }
+
+            //collapse and group
+            $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setOutlineLevel(1);
+            $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setVisible(false);
+            $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setCollapsed(true);
+
+            $current_row++;
+        }
+
+        $opening_balance_row = $current_row;
+
+        $first_children_row = $current_row - count($bank_accounts);
+        $last_children_row = $current_row - 1;
+
+        foreach (range(1, 12) as $month) {
+            $month_col = $arr[$month]['column'];
+
+            //write amount for the current month
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($month_col . $current_row, '=SUM(' . $month_col . $first_children_row . ':' . $month_col . $last_children_row . ')');
+        }
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'OPENING BALANCE 2020');
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($ytd_total_col . $current_row, '=SUM(' . $ytd_total_col . $first_children_row . ':' . $ytd_total_col . $last_children_row . ')');
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+        $current_row++;
+
+        //CREDIT NOTES SECTION
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'Credit Notes (cash)');
+        foreach (range(1, $today_m) as $month) {
+            $month_amount = is_array($data_credit_notes_totals[2020][$month]) ? array_sum($data_credit_notes_totals[2020][$month]) : 0;
+            $month_col = $arr[$month]['column'];
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($month_col . $current_row, $month_amount);
+        }
+
+        $first_month_cell = $arr[1]['column'] . $current_row;
+        $last_month_cell = $arr[12]['column'] . $current_row;
+        $ytd_total_formula = '=SUM(' . $first_month_cell . ':' . $last_month_cell . ')';
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($ytd_total_col . $current_row, $ytd_total_formula);
+
+        $income_rows[] = $current_row;
+        $current_row++;
+
+        //CONCEPTS TOTALS SECTION investment fund / other incomes
+        $concepts_totals_arr = [
+            55 => 'Fondo de Inversion/ Invesment Found',
+            56 => 'Otros Ingresos/ Other Incomes',
+        ];
+        foreach ($concepts_totals_arr as $id_concept => $concept_description) {
+            foreach (range(2019, $year) as $concepts_year) {
+                $spreadsheet->getActiveSheet()
+                    ->setCellValue($concept_col . $current_row, $concepts_year . ' ' . $concept_description);
+
+                $total_year = 0;
+                foreach (range(1, $today_m) as $month) {
+                    $month_amount = is_array($data_concepts_total[$id_concept][$concepts_year][$month]) ? array_sum($data_concepts_total[$id_concept][$concepts_year][$month]) : 0;
+                    $month_col = $arr[$month]['column'];
+                    $total_year += $month_amount;
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($month_col . $current_row, $month_amount);
+                }
+
+                $first_month_cell = $arr[1]['column'] . $current_row;
+                $last_month_cell = $arr[12]['column'] . $current_row;
+                $ytd_total_formula = '=SUM(' . $first_month_cell . ':' . $last_month_cell . ')';
+
+                $spreadsheet->getActiveSheet()
+                    ->setCellValue($ytd_total_col . $current_row, $ytd_total_formula);
+
+                if ($total_year) {
+                    $income_rows[] = $current_row;
+                    $current_row++;
+                }
+            }
+        }
+
+
+
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment;filename="budget-export.xlsx"');
+        header('Cache-Control: max-age=0');
+        // If you're serving to IE over SSL, then the following may be needed
+        header('Expires: Mon, 26 Jul 1997 05:00:00 GMT'); // Date in the past
+        header('Last-Modified: ' . gmdate('D, d M Y H:i:s') . ' GMT'); // always modified
+        header('Cache-Control: cache, must-revalidate'); // HTTP/1.1
+        header('Pragma: public'); // HTTP/1.0
+        $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+        $writer->save('php://output');
+        exit;
+    }
+
+    /**
+     * [description]
+     */
+    protected function setGrayFormat($cell, $spreadsheet){
+        $spreadsheet->getActiveSheet()->getStyle($cell)->applyFromArray(
+            ['fill' => [
+                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                        'color' => ['argb' => 'FFE5E5E5'],
+                    ],
+                ]
+        );
+    }
+    protected function setDarkGrayFormat($cell, $spreadsheet){
+        $spreadsheet->getActiveSheet()->getStyle($cell)->applyFromArray(
+            ['fill' => [
+                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                        'color' => ['argb' => 'FFD9D9D9'],
+                    ],
+                ]
+        );
+    }
+    protected function setYellowFormat($cell, $spreadsheet){
+        $spreadsheet->getActiveSheet()->getStyle($cell)->applyFromArray(
+            ['fill' => [
+                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                        'color' => ['argb' => 'FFEEECE1'],
+                    ],
+                ]
+        );
+    }
+    protected function setCurrencyFormat($cell, $spreadsheet){
+        $spreadsheet->getActiveSheet()
+            ->getStyle($cell)
+            ->getNumberFormat()
+            ->setFormatCode('_($#,##0.00_)');
+    }
+
+    protected function setBalanceCurrencyFormat($cell, $spreadsheet){
+        $spreadsheet->getActiveSheet()
+            ->getStyle($cell)
+            ->getNumberFormat()
+            ->setFormatCode('[Red]_($#,##0.00_);-_($#,##0.00_);_($#,##0.00_)');
+    }
+    protected function setBalanceCurrencyInverseFormat($cell, $spreadsheet){
+        $spreadsheet->getActiveSheet()
+            ->getStyle($cell)
+            ->getNumberFormat()
+            ->setFormatCode('_($#,##0.00_);[Red]-_($#,##0.00_);_($#,##0.00_)');
     }
 
     /***
