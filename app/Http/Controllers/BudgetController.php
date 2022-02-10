@@ -9,8 +9,11 @@ use App\BudgetCategory;
 use App\CreditNote;
 use App\ExchangeRate;
 use App\Expense;
+use App\ExRateSourceAndApp;
+use App\FeeConcept;
 use App\Income;
 use App\Payment;
+use App\PaymentDetail;
 use Carbon\Carbon;
 use DateTime;
 use Illuminate\Http\Request;
@@ -95,12 +98,89 @@ class BudgetController extends Controller
             $budget_categories_result
         );
 
-        Log::info($budgets_result);
+        $concept_ids = [21, 22, 23, 29, 36, 50, 2, 8, 11, 12, 26, 27, 28, 33, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 9, 53, 54, 51];
+        $concepts = FeeConcept::whereIn('id_concept', $concept_ids)->orderBy('_order', 'ASC')->get();
+        $concept_ids = [];
+        foreach ($concepts as $concept) {
+            $concept_ids[] = $concept->id_concept;
+        }
+
+        $data_payment_totals = [];
+        foreach (range(2019, $year) as $target_year) {
+            $data_payment_totals[$target_year] = $this->getPaymentTotalsByYear($year, $target_year, $concept_ids);
+        }
+
+        $data_credit_notes_totals = [];
+        foreach (range(2019, $year) as $target_year) {
+            $data_credit_notes_totals[$target_year] = $this->getCreditNotesTotalsByYear($year, $target_year);
+        }
+
+        $data_concepts_total = [];
+        foreach (array(55, 56) as $id_concept) {
+            $data_concepts = [];
+            foreach (range(2019, $year) as $target_year) {
+                $data_concepts[$target_year] = $this->getOwnerTotalsByYear($year, $target_year, 74, $id_concept);
+            }
+            $data_concepts_total[$id_concept] = $data_concepts;
+        }
+
+        $exchange_rate_conversions = $this->getExchangeConversions($year);
+        $exchange_rate_adjustments = $this->getExchangeRateAdjustments($year);
+        $statements_data = $this->getStatementsData($year, $max_month);
+
+        $data = array(
+            'year' => $year,
+            'date_from' => $date_from,
+            'date_to' => $date_to,
+            'today_m' => $today_m,
+            'budgets_result' => $budgets_result,
+            'expenses_result' => $expenses_result,
+            'budget_concepts_result' => $budget_concepts_result,
+            'budget_concepts_description' => $budget_concepts_description,
+            'budget_categories_result' => $budget_categories_result,
+            'data_payment_totals' => $data_payment_totals,
+            'data_credit_notes_totals' => $data_credit_notes_totals,
+            'exchange_rate_conversions' => $exchange_rate_conversions,
+            'exchange_rate_adjustments' => $exchange_rate_adjustments,
+            'statements_data' => $statements_data,
+            'month_names' => $month_names,
+            'data_concepts_total' => $data_concepts_total,
+            'budget_hoa_dues' => $budget_hoa_dues,
+            'bank_accounts' => $bank_accounts,
+            'bank_account_balances' => $bank_account_balances,
+            'bank_account_names' => $bank_account_names,
+            'bank_account_balances_totals' => $bank_account_balances_totals,
+            'concept_ids' => $concept_ids,
+        );
+        Log::info(json_encode($data));
+
     }
 
     /***
      * Protected methods
      */
+
+    /**
+     * [getStatementsData description]
+     *
+     * @param   [type]  $year   [$year description]
+     * @param   [type]  $month  [$month description]
+     *
+     * @return  [type]          [return description]
+     */
+    protected function getStatementsData($year, $month)
+    {
+        $result = [];
+        // foreach (range(1,$month) as $month) {
+        //     $days_in_month = cal_days_in_month(CAL_GREGORIAN, $month, $year);
+
+        //     $date1 = "{$year}-{$month}-01";
+        //     $date2 = "{$year}-{$month}-{$days_in_month}";
+        //     $data = Statements::allReport($date1, $date2);
+        //     $result[$month] = $data;
+        // }
+        return $result;
+    }
 
 
     /**
@@ -394,6 +474,14 @@ class BudgetController extends Controller
         return $bank_account_balances;
     }
 
+    /**
+     * [getBankAccountBalance description]
+     *
+     * @param   [type]  $id_bank_account  [$id_bank_account description]
+     * @param   [type]  $date             [$date description]
+     *
+     * @return  [type]                    [return description]
+     */
     protected function getBankAccountBalance($id_bank_account, $date)
     {
 
@@ -486,6 +574,205 @@ class BudgetController extends Controller
         }
 
         return $credit_notes_total + $payments_sum + $incomes_total - $expenses_sum + $previous_balance;
+    }
+
+    /**
+     * [getPaymentTotalsByYear description]
+     *
+     * @param   [type]  $year         [$year description]
+     * @param   [type]  $target_year  [$target_year description]
+     * @param   [type]  $concept_ids  [$concept_ids description]
+     *
+     * @return  [type]                [return description]
+     */
+    protected function getPaymentTotalsByYear($year, $target_year, $concept_ids)
+    {
+        $result = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $newRow = [];
+
+            /* 
+                    2   Late Fees
+                    9   Not Identified
+                    11  Penalty Fees
+                *   21  Mantenimiento por Indiviso / Undivided Interest
+                *   22  Subsidio Fase II / Phase II Bank Shortfall
+                *   23  Mantenimiento JardÃ­n Privativo / Private Garden Fee
+                    24  Fine for speeding/Multa exceso de velocidad
+                    26  Jan/Feb Dues Catch-up Reflects Dues Increase
+                    27  Special Assessment Maintenance & Improvement
+                    28  SA 1st Quarter 2019 Ongoing Maintenance Fund
+                    29  SA Project Admin Fee
+                    30  SA Removal of Propane Tank & Roof Sealing
+                    33  Fine / Multa
+                    34  SA 2nd Quarter 2019 Ongoing Maintenance Fund
+                    35  SA 3rd Quarter 2019 Ongoing Maintenance Fund
+                    36  SA 4th Quarter 2019 Ongoing Maintenance Fund
+                    37  Contribucion de limpieza de palapa/ Palapa cleaning contribution
+                    38  Balance Forwarded Payment
+            */
+
+            // $total_hoa =0;
+            // $total_late_fees =0;
+            // $total_incorrect_deposits =0;
+
+            $payments = Payment::where(DB::raw("YEAR(value_date) = {$year}"))
+                ->where(DB::raw("MONTH(value_date) = {$i}"))
+                ->where('bool_has_conversion', false)
+                ->get();
+
+
+            foreach ($payments as $payment) {
+                $payment_details = PaymentDetail::where('id_payment', $payment->id_payment)
+                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
+
+                foreach ($payment_details as $detail) {
+                    $amount = $detail->amountusd;
+                    if ($detail->payment->currency == 'USD') {
+                        $e_r = $this->getExchangeRate($detail->payment->deposit_date);
+                        $e_r = $e_r ? $e_r : 1;
+                        $amount *= $e_r;
+                    }
+                    if (in_array($detail->id_concept, $concept_ids)) {
+                        $newRow[$detail->id_concept][] = $amount;
+                    }
+                }
+            }
+
+            $payments = Payment::where(DB::raw("YEAR(value_date) = {$year}"))
+                ->where(DB::raw("MONTH(value_date) = {$i}"))
+                ->where('bool_has_conversion', true)
+                ->where('conversion_currency', 'USD')
+                ->get();
+
+            foreach ($payments as $payment) {
+
+                $payment_details = PaymentDetail::where('id_payment', $payment->id_payment)
+                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
+
+                foreach ($payment_details as $detail) {
+                    if (in_array($detail->id_concept, $concept_ids)) {
+                        $newRow[$detail->id_concept][] = $detail->amountmxn;
+                    }
+                }
+            }
+            $result[$i] = $newRow;
+        }
+
+        return $result;
+    }
+
+    /**
+     * [getCreditNotesTotalsByYear description]
+     *
+     * @param   [type]  $year         [$year description]
+     * @param   [type]  $target_year  [$target_year description]
+     *
+     * @return  [type]                [return description]
+     */
+    protected function getCreditNotesTotalsByYear($year, $target_year)
+    {
+        $result = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $newRow = [];
+
+            $credit_notes = CreditNote::where(DB::raw("YEAR(date) = {$year}"))
+                ->where(DB::raw("MONTH(date) = {$i}"))
+                ->get();
+
+            foreach ($credit_notes as $credit_note) {
+
+                $payment_details = PaymentDetail::where('id_credit_note', $credit_note->id_credit_note)
+                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
+
+                foreach ($payment_details as $detail) {
+                    $amount = $detail->amount;
+                    $newRow[] = $amount;
+                }
+            }
+            $result[$i] = $newRow;
+        }
+        return $result;
+    }
+
+    /**
+     * [getOwnerTotalsByYear description]
+     *
+     * @param   [type]  $year         [$year description]
+     * @param   [type]  $target_year  [$target_year description]
+     * @param   [type]  $id_owner     [$id_owner description]
+     * @param   [type]  $id_concept   [$id_concept description]
+     *
+     * @return  [type]                [return description]
+     */
+    protected function getOwnerTotalsByYear($year, $target_year, $id_owner, $id_concept)
+    {
+        $result = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $newRow = [];
+
+            $payments = Payment::where(DB::raw("YEAR(deposit_date) = {$year}"))
+                ->where(DB::raw("MONTH(deposit_date) = {$i}"))
+                ->where('id_owner', $id_owner) //Dues Statements: 01 "Others"
+                ->get();
+
+            foreach ($payments as $payment) {
+
+                $payment_details = PaymentDetail::where('id_concept', $id_concept)
+                    ->where('id_payment', $payment->id_payment)
+                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
+
+                foreach ($payment_details as $detail) {
+                    $amount = $detail->amountusd;
+                    if ($detail->payment->currency == 'USD') {
+                        $e_r = $this->getExchangeRate($detail->payment->deposit_date);
+                        $e_r = $e_r ? $e_r : 1;
+                        $amount *= $e_r;
+                    }
+                    $newRow[] = $amount;
+                }
+            }
+            $result[$i] = $newRow;
+        }
+
+        return $result;
+    }
+
+    /**
+     * [getExchangeConversions description]
+     *
+     * @param   [type]  $year  [$year description]
+     *
+     * @return  [type]         [return description]
+     */
+    protected function getExchangeConversions($year)
+    {
+        $result = [];
+        foreach (range(1, 12) as $month) {
+            $date = $year . '-' . sprintf('%02d', $month) . '-01';
+            $e_r_adj = ExchangeRate::where('date', '<=', $date)->orderBy('date', 'DESC')->first();
+            $result[$month] = $e_r_adj->amount;
+        }
+        return $result;
+    }
+
+    /**
+     * [getExchangeRateAdjustments description]
+     *
+     * @param   [type]  $year  [$year description]
+     *
+     * @return  [type]         [return description]
+     */
+    protected function getExchangeRateAdjustments($year)
+    {
+        $result = [];
+        foreach (range(1, 12) as $month) {
+            $e_r_adj = ExRateSourceAndApp::where('year', $year)
+                ->where('month', $month)
+                ->first();
+            $result[$month] = $e_r_adj->amount;
+        }
+        return $result;
     }
 
     /**
