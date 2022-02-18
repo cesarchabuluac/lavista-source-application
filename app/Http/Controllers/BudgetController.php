@@ -35,12 +35,27 @@ class BudgetController extends Controller
     }
 
     /**
+     * [conectDatabase description]
+     *
+     * @param   [type]  $database  [$database description]
+     *
+     * @return  [type]             [return description]
+     */
+    private function conectDatabase($database) {
+        config()->set('database.connections.mysql.database', $database);
+        DB::reconnect('mysql');
+    }
+
+    /**
      * Display a listing of the resource.
      *
      * @return \Illuminate\Http\Response
      */
     public function index(Request $request)
     {
+
+        $this->conectDatabase($request->residencias);
+
         $max_month = 12;
         $year = 2020;
         $date_from = $year . '-01-01';
@@ -49,29 +64,21 @@ class BudgetController extends Controller
         $month_names = getMonthNames();
         $budget_hoa_dues = 0.00;
 
-        $bank_accounts = ['6387-mxn', '6735-usd', '0903-mxn', '5716-mxn', '6062-usd', 'covid', '24383-mxn'];
-        $bank_currencies = [
-            '6387-mxn' => 'mxn',
-            '6735-usd' => 'usd',
-            '0903-mxn' => 'mxn',
-            '5716-mxn' => 'mxn',
-            '6062-usd' => 'usd',
-            'covid' => 'mxn',
-            '24383-mxn' => 'mxn',
-        ];
-
+        $bank_accounts = BankAccount::all();
+        $bank_currencies = $bank_accounts->pluck('currency', 'id_bank_account');
+        
         $bank_account_balances = $this->getOpeningBankAccountBalances($bank_accounts, $year, $max_month);
         $bank_account_balances = $this->getBankAccountBalancesConversion($bank_account_balances, $bank_currencies, $year);
 
-        $bank_account_names = array(
-            '6387-mxn' => 'BBVA BANCOMER RESERVA CTA. 6387 PESOS',
-            '6735-usd' => 'BBVA BANCOMER RESERVA CTA. 6735 DOLARES (EQ. IN MXN)',
-            '0903-mxn' => 'BBVA BANCOMER CTA. 0903 PESOS',
-            '5716-mxn' => 'BBVA BANCOMER CTA. 5716 PESOS',
-            '6062-usd' => 'BBVA BANCOMER CTA. 6062 DOLARES (EQ. IN MXN)',
-            'covid' => 'CONTINGENCY COVID-19 PESOS',
-            '24383-mxn' => 'INTERCAM CTA. 24383 PESOS',
-        );
+        $bank_account_names = [];
+
+        //Bank names
+        foreach ($bank_accounts as $key => $item) {
+            $currency = ($item->currency === 'MXN') ? "PESOS" : " DOLARES (EQ. IN MXN)";
+            $computed = "{$item->name} CTA. {$item->last_four} {$currency}";
+            $bank_account_names[$item->id_bank_account] = strtoupper($computed);
+        }
+
         $bank_account_balances_totals = [];
 
         foreach ($bank_account_balances as $month => $balance) {
@@ -99,8 +106,7 @@ class BudgetController extends Controller
             $budget_categories_result
         );
 
-        $concept_ids = [21, 22, 23, 29, 36, 50, 2, 8, 11, 12, 26, 27, 28, 33, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 9, 53, 54, 51];
-        $concepts = FeeConcept::whereIn('id_concept', $concept_ids)->orderBy('_order', 'ASC')->get();
+        $concepts = FeeConcept::orderBy('_order', 'ASC')->get();
         $concept_ids = [];
         foreach ($concepts as $concept) {
             $concept_ids[] = $concept->id_concept;
@@ -153,6 +159,7 @@ class BudgetController extends Controller
             'bank_account_balances_totals' => $bank_account_balances_totals,
             'concept_ids' => $concept_ids,
         );
+
 
         $today_m = $data['today_m'];
         $year = $data['year'];
@@ -248,7 +255,7 @@ class BudgetController extends Controller
         foreach ($bank_accounts as $bank_account) {
             foreach (range(1, 12) as $month) {
                 $month_col = $arr[$month]['column'];
-                $amount = $bank_account_balances[$month][$bank_account];
+                $amount = $bank_account_balances[$month][$bank_account->id_bank_account];
 
                 //write amount for the current month
                 $spreadsheet->getActiveSheet()
@@ -256,10 +263,10 @@ class BudgetController extends Controller
             }
 
             $spreadsheet->getActiveSheet()
-                ->setCellValue($ytd_total_col . $current_row, $bank_account_balances[1][$bank_account]);
+                ->setCellValue($ytd_total_col . $current_row, $bank_account_balances[1][$bank_account->id_bank_account]);
 
             $spreadsheet->getActiveSheet()
-                ->setCellValue($concept_col . $current_row, $bank_account_names[$bank_account]);
+                ->setCellValue($concept_col . $current_row, $bank_account_names[$bank_account->id_bank_account]);
 
             foreach ($arr as $value) {
                 //paint yellow row
@@ -356,6 +363,322 @@ class BudgetController extends Controller
             }
         }
 
+        //INCOMES SECTION
+        $concept_list = [];
+
+        foreach (range(2019, $year) as $concepts_year) {
+            $id_concepts = [];
+            collect($data_payment_totals[$concepts_year])->each(function ($month_data, $month) use (&$id_concepts) {
+                if (!empty($month_data)) {
+                    foreach (array_keys($month_data) as $key => $id_concept) {
+                        $id_concepts[] = $id_concept;
+                    }
+                }
+            });
+
+            $id_concepts = array_unique($id_concepts);
+            foreach ($id_concepts as $key => $id_concept) {
+                $concept_list[$id_concept] = $concept_list[$id_concept] ?? [];
+                $concept_list[$id_concept][] = $concepts_year;
+            }
+        }
+
+        foreach ($concept_ids as $key => $id_concept) {
+            if (isset($concept_list[$id_concept])) {
+                foreach ($concept_list[$id_concept] as $concepts_year) {
+                    $income_rows[] = $current_row;
+                    $concept = FeeConcept::find($id_concept);
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($concept_col . $current_row, $concepts_year . ' ' . $concept->description);
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($annual_budget_col . $current_row, $concept->s_and_a_column1);
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($available_col . $current_row, $concept->s_and_a_column2);
+
+                    foreach (range(1, $today_m) as $month) {
+
+                        if (is_array($data_payment_totals[$concepts_year][$month])) {
+                            if (isset($data_payment_totals[$concepts_year][$month][$id_concept]) && is_array($data_payment_totals[$concepts_year][$month][$id_concept])) {
+                                $month_amount = is_array($data_payment_totals[$concepts_year][$month][$id_concept]) ? array_sum($data_payment_totals[$concepts_year][$month][$id_concept]) : 0;
+                                $month_col = $arr[$month]['column'];
+                                $spreadsheet->getActiveSheet()
+                                    ->setCellValue($month_col . $current_row, $month_amount);
+                            } else {
+                                $month_amount = 0;
+                                $month_col = $arr[$month]['column'];
+                                $spreadsheet->getActiveSheet()
+                                    ->setCellValue($month_col . $current_row, $month_amount);
+                            }
+                        }
+                    }
+
+                    $first_month_cell = $arr[1]['column'] . $current_row;
+                    $last_month_cell = $arr[12]['column'] . $current_row;
+                    $ytd_total_formula = '=SUM(' . $first_month_cell . ':' . $last_month_cell . ')';
+
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($ytd_total_col . $current_row, $ytd_total_formula);
+
+                    $current_row++;
+                }
+            }
+        }
+
+        //EXCHANGE RATE CONVERSION
+        $income_rows[] = $current_row;
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'EXCHANGE RATE');
+
+        foreach (range(1, 12) as $month) {
+            $amount = $exchange_rate_adjustments[$month];
+
+            $month_col = $arr[$month]['column'];
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($month_col . $current_row, $amount);
+        }
+
+        $first_month_cell = $arr[1]['column'] . $current_row;
+        $last_month_cell = $arr[12]['column'] . $current_row;
+        $ytd_total_formula = '=SUM(' . $first_month_cell . ':' . $last_month_cell . ')';
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($ytd_total_col . $current_row, $ytd_total_formula);
+
+        $current_row++;
+
+        //FORMATING AND COLLAPSE ROWS
+        foreach ($income_rows as $income_row) {
+            foreach ($arr as $value) {
+                //paint yellow row
+                $this->setYellowFormat($value['column'] . $income_row, $spreadsheet);
+                $this->setCurrencyFormat($value['column'] . $income_row, $spreadsheet);
+            }
+
+            //collapse and group
+            $spreadsheet->getActiveSheet()->getRowDimension($income_row)->setOutlineLevel(1);
+            $spreadsheet->getActiveSheet()->getRowDimension($income_row)->setVisible(false);
+            $spreadsheet->getActiveSheet()->getRowDimension($income_row)->setCollapsed(true);
+        }
+
+        //TOTAL INCOMES
+        $first_incomes_row = $income_rows[0];
+        $last_incomes_row = $income_rows[count($income_rows) - 1];
+
+        $total_incomes_row = $current_row;
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'TOTAL INCOMES');
+
+        $last_incomes_row = $current_row - 1;
+
+        foreach (range(1, 12) as $month) {
+            $month_col = $arr[$month]['column'];
+
+            //write amount for the current month
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($month_col . $current_row, '=SUM(' . $month_col . $first_incomes_row . ':' . $month_col . $last_incomes_row . ')');
+        }
+
+        $first_month_cell = $ytd_total_col . $first_incomes_row;
+        $last_month_cell = $ytd_total_col . $last_incomes_row;
+        $ytd_total_formula = '=SUM(' . $first_month_cell . ':' . $last_month_cell . ')';
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($ytd_total_col . $current_row, $ytd_total_formula);
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+
+        $current_row++;
+
+        //TOTAL OF FUNDS
+        $total_of_funds_row = $current_row;
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'TOTAL OF FUNDS');
+
+        foreach (range($arr[1]['column'], $arr['ytd_total']['column']) as $column) {
+            $opening_balance_cell = $column . $opening_balance_row;
+            $total_incomes_cell = $column . $total_incomes_row;
+            $total_formula = '=' . $opening_balance_cell . '+' . $total_incomes_cell;
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($column . $current_row, $total_formula);
+        }
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+
+        $current_row++;
+
+        //BUDGET SECTION
+        $headers_row = 2;
+        $this->insertBudgetDataExcel($spreadsheet, $budget_data, $today_m, $headers_row, $current_row, $arr, $data_credit_notes_totals, $year);
+
+        $disbursements_row = $current_row;
+
+        $current_row++;
+
+        //DIFFERENCE BETWEEN SOURCE AND APPLICATION
+        $difference_row = $current_row;
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'DIFFERENCE BETWEEN SOURCE AND APPLICATION');
+
+        foreach (range($arr[1]['column'], $arr['ytd_total']['column']) as $column) {
+            $total_of_funds_cell = $column . $total_of_funds_row;
+            $disbursements_cell = $column . $disbursements_row;
+            $total_formula = '=' . $total_of_funds_cell . '-' . $disbursements_cell;
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($column . $current_row, $total_formula);
+        }
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+
+        $current_row++;
+
+        //CLOSING BANK BALANCE 2020
+        foreach ($bank_accounts as $bank_account) {
+            foreach (range(1, 12) as $month) {
+                $month_col = $arr[$month]['column'];
+                $amount = $bank_account_balances[$month + 1][$bank_account->id_bank_account];
+
+                //write amount for the current month
+                $spreadsheet->getActiveSheet()
+                    ->setCellValue($month_col . $current_row, $amount);
+            }
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($ytd_total_col . $current_row, $bank_account_balances[$today_m + 1][$bank_account->id_bank_account]);
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($concept_col . $current_row, $bank_account_names[$bank_account->id_bank_account]);
+
+            foreach ($arr as $value) {
+                //paint yellow row
+                $this->setYellowFormat($value['column'] . $current_row, $spreadsheet);
+                $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+            }
+
+            //collapse and group
+            $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setOutlineLevel(1);
+            $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setVisible(false);
+            $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setCollapsed(true);
+
+            $current_row++;
+        }
+
+        $closing_balance_row = $current_row;
+
+        $first_children_row = $current_row - count($bank_accounts);
+        $last_children_row = $current_row - 1;
+
+        foreach (range(1, 12) as $month) {
+            $month_col = $arr[$month]['column'];
+
+            //write amount for the current month
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($month_col . $current_row, '=SUM(' . $month_col . $first_children_row . ':' . $month_col . $last_children_row . ')');
+        }
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'CLOSING BANK BALANCE 2020');
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($ytd_total_col . $current_row, '=SUM(' . $ytd_total_col . $first_children_row . ':' . $ytd_total_col . $last_children_row . ')');
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+        $current_row++;
+
+        //GRAND TOTAL
+        $grand_total_row = $current_row;
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'GRAND TOTAL');
+
+        foreach (range($arr[1]['column'], $ytd_total_col) as $column) {
+            $closing_balance_cell = $column . '' . $closing_balance_row;
+            $total_formula = '=' . $closing_balance_cell;
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($column . $current_row, $total_formula);
+        }
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+
+        //DIFERENCIA / DIFFERENCE
+        $current_row++;
+
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'DIFERENCIA / DIFFERENCE');
+
+        foreach (range($arr[1]['column'], $arr['ytd_total']['column']) as $column) {
+            $difference_cell = $column . $difference_row;
+            $closing_balance_cell = $column . $closing_balance_row;
+            $total_formula = '=' . $difference_cell . '-' . $closing_balance_cell;
+
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($column . $current_row, $total_formula);
+        }
+
+        foreach ($arr as $value) {
+            //paint gray row
+            $this->setDarkGrayFormat($value['column'] . $current_row, $spreadsheet);
+            $this->setCurrencyFormat($value['column'] . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($value['column'] . $current_row)->getFont()->setBold(true);
+        }
+
+        //autosize columns
+        foreach (range($concept_col, $annual_budget_col) as $column) {
+            $spreadsheet->getActiveSheet()->getColumnDimension($column)
+                ->setAutoSize(true);
+        }
+
+        //hide unused months columns
+        if ((12 - $today_m) > 0) {
+            foreach (range($today_m + 1, 12) as $month) {
+                $spreadsheet->getActiveSheet()->getColumnDimension($arr[$month]['column'])->setCollapsed(true);
+                $spreadsheet->getActiveSheet()->getColumnDimension($arr[$month]['column'])->setVisible(false);
+            }
+        }
+        // return;
+
+        $spreadsheet->getActiveSheet()->getColumnDimension($available_col)->setWidth(18);
 
 
         header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -368,62 +691,70 @@ class BudgetController extends Controller
         header('Pragma: public'); // HTTP/1.0
         $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
         $writer->save('php://output');
+
+        // $this->conectDatabase(env('DB_DATABASE'));
+
         exit;
     }
 
     /**
      * [description]
      */
-    protected function setGrayFormat($cell, $spreadsheet){
+    protected function setGrayFormat($cell, $spreadsheet)
+    {
         $spreadsheet->getActiveSheet()->getStyle($cell)->applyFromArray(
-            ['fill' => [
-                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
-                        'color' => ['argb' => 'FFE5E5E5'],
-                    ],
-                ]
+            [
+                'fill' => [
+                    'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                    'color' => ['argb' => 'FFE5E5E5'],
+                ],
+            ]
         );
     }
-    protected function setDarkGrayFormat($cell, $spreadsheet){
+    protected function setDarkGrayFormat($cell, $spreadsheet)
+    {
         $spreadsheet->getActiveSheet()->getStyle($cell)->applyFromArray(
-            ['fill' => [
-                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
-                        'color' => ['argb' => 'FFD9D9D9'],
-                    ],
-                ]
+            [
+                'fill' => [
+                    'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                    'color' => ['argb' => 'FFD9D9D9'],
+                ],
+            ]
         );
     }
-    protected function setYellowFormat($cell, $spreadsheet){
+    protected function setYellowFormat($cell, $spreadsheet)
+    {
         $spreadsheet->getActiveSheet()->getStyle($cell)->applyFromArray(
-            ['fill' => [
-                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
-                        'color' => ['argb' => 'FFEEECE1'],
-                    ],
-                ]
+            [
+                'fill' => [
+                    'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                    'color' => ['argb' => 'FFEEECE1'],
+                ],
+            ]
         );
     }
-    protected function setCurrencyFormat($cell, $spreadsheet){
+    protected function setCurrencyFormat($cell, $spreadsheet)
+    {
         $spreadsheet->getActiveSheet()
             ->getStyle($cell)
             ->getNumberFormat()
             ->setFormatCode('_($#,##0.00_)');
     }
 
-    protected function setBalanceCurrencyFormat($cell, $spreadsheet){
+    protected function setBalanceCurrencyFormat($cell, $spreadsheet)
+    {
         $spreadsheet->getActiveSheet()
             ->getStyle($cell)
             ->getNumberFormat()
             ->setFormatCode('[Red]_($#,##0.00_);-_($#,##0.00_);_($#,##0.00_)');
     }
-    protected function setBalanceCurrencyInverseFormat($cell, $spreadsheet){
+    protected function setBalanceCurrencyInverseFormat($cell, $spreadsheet)
+    {
         $spreadsheet->getActiveSheet()
             ->getStyle($cell)
             ->getNumberFormat()
             ->setFormatCode('_($#,##0.00_);[Red]-_($#,##0.00_);_($#,##0.00_)');
     }
-
-    /***
-     * Protected methods
-     */
 
     /**
      * [getStatementsData description]
@@ -487,6 +818,7 @@ class BudgetController extends Controller
             $expenses_result[$concept->id_budget_concept] =
                 [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0, 6 => 0, 7 => 0, 8 => 0, 9 => 0, 10 => 0, 11 => 0, 12 => 0];
             $budget_concepts_description[$concept->id_budget_concept] = $concept->description;
+            //
             $budget_concepts_result[$concept->id_budget_category] = [];
             $budget_concepts_result[$concept->id_budget_category][] = $concept->id_budget_concept;
         }
@@ -693,7 +1025,7 @@ class BudgetController extends Controller
     {
         foreach ($bank_account_balances as $month => &$balances) {
             foreach ($balances as $bank_account => $amount) {
-                if ($bank_currencies[$bank_account] == 'usd') {
+                if ($bank_currencies[$bank_account] == 'USD') {
                     if ($month > 12) {
                         $year += 1;
                     }
@@ -711,6 +1043,15 @@ class BudgetController extends Controller
         return $bank_account_balances;
     }
 
+    /**
+     * [getOpeningBankAccountBalances description]
+     *
+     * @param   [type]  $bank_accounts  [$bank_accounts description]
+     * @param   [type]  $year           [$year description]
+     * @param   [type]  $max_month      [$max_month description]
+     *
+     * @return  [type]                  [return description]
+     */
     protected function getOpeningBankAccountBalances($bank_accounts, $year, $max_month)
     {
         $bank_account_balances = [];
@@ -720,9 +1061,9 @@ class BudgetController extends Controller
             $balances = [];
             $date = $year . '-' . sprintf('%02d', $month) . '-01';
             foreach ($bank_accounts as $bank_account) {
-                $balance = $this->getBankAccountBalance($bank_account, $date);
+                $balance = $this->getBankAccountBalance($bank_account->id_bank_account, $date);
                 // $b_a = BankAccount::find($bank_account);
-                $balances[$bank_account] = $balance;
+                $balances[$bank_account->id_bank_account] = $balance;
             }
             $bank_account_balances[$month] = $balances;
         }
@@ -730,9 +1071,9 @@ class BudgetController extends Controller
             $balances = [];
         $date = ($year + 1) . '-01-01';
         foreach ($bank_accounts as $bank_account) {
-            $balance = $this->getBankAccountBalance($bank_account, $date);
+            $balance = $this->getBankAccountBalance($bank_account->id_bank_account, $date);
             // $b_a = BankAccount::find($bank_account);
-            $balances[$bank_account] = $balance;
+            $balances[$bank_account->id_bank_account] = $balance;
         }
         $bank_account_balances[13] = $balances;
 
@@ -880,9 +1221,8 @@ class BudgetController extends Controller
             // $total_hoa =0;
             // $total_late_fees =0;
             // $total_incorrect_deposits =0;
-
-            $payments = Payment::where(DB::raw("YEAR(value_date) = {$year}"))
-                ->where(DB::raw("MONTH(value_date) = {$i}"))
+            $payments = Payment::where(DB::raw("YEAR(value_date)"), $year)
+                ->where(DB::raw("MONTH(value_date)"), $i)
                 ->where('bool_has_conversion', false)
                 ->get();
 
@@ -904,8 +1244,8 @@ class BudgetController extends Controller
                 }
             }
 
-            $payments = Payment::where(DB::raw("YEAR(value_date) = {$year}"))
-                ->where(DB::raw("MONTH(value_date) = {$i}"))
+            $payments = Payment::where(DB::raw("YEAR(value_date)"), $year)
+                ->where(DB::raw("MONTH(value_date)"), $i)
                 ->where('bool_has_conversion', true)
                 ->where('conversion_currency', 'USD')
                 ->get();
@@ -913,7 +1253,7 @@ class BudgetController extends Controller
             foreach ($payments as $payment) {
 
                 $payment_details = PaymentDetail::where('id_payment', $payment->id_payment)
-                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
+                    ->where(DB::raw("YEAR(date_from)"), $target_year)->get();
 
                 foreach ($payment_details as $detail) {
                     if (in_array($detail->id_concept, $concept_ids)) {
@@ -941,14 +1281,14 @@ class BudgetController extends Controller
         for ($i = 1; $i <= 12; $i++) {
             $newRow = [];
 
-            $credit_notes = CreditNote::where(DB::raw("YEAR(date) = {$year}"))
-                ->where(DB::raw("MONTH(date) = {$i}"))
+            $credit_notes = CreditNote::where(DB::raw("YEAR(date)"), $year)
+                ->where(DB::raw("MONTH(date)"), $i)
                 ->get();
 
             foreach ($credit_notes as $credit_note) {
 
                 $payment_details = PaymentDetail::where('id_credit_note', $credit_note->id_credit_note)
-                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
+                    ->where(DB::raw("YEAR(date_from)"), $target_year)->get();
 
                 foreach ($payment_details as $detail) {
                     $amount = $detail->amount;
@@ -976,19 +1316,17 @@ class BudgetController extends Controller
         for ($i = 1; $i <= 12; $i++) {
             $newRow = [];
 
-            $payments = Payment::where(DB::raw("YEAR(deposit_date) = {$year}"))
-                ->where(DB::raw("MONTH(deposit_date) = {$i}"))
+            $payments = Payment::where(DB::raw("YEAR(deposit_date)"), $year)
+                ->where(DB::raw("MONTH(deposit_date)"), $i)
                 ->where('id_owner', $id_owner) //Dues Statements: 01 "Others"
                 ->get();
 
             foreach ($payments as $payment) {
-
                 $payment_details = PaymentDetail::where('id_concept', $id_concept)
                     ->where('id_payment', $payment->id_payment)
-                    ->where(DB::raw("YEAR(date_from) = {$target_year}"))->get();
-
+                    ->where(DB::raw("YEAR(date_from)"), $target_year)->get();
                 foreach ($payment_details as $detail) {
-                    $amount = $detail->amountusd;
+                    $amount = $detail->amount_usd;
                     if ($detail->payment->currency == 'USD') {
                         $e_r = $this->getExchangeRate($detail->payment->deposit_date);
                         $e_r = $e_r ? $e_r : 1;
@@ -1016,7 +1354,8 @@ class BudgetController extends Controller
         foreach (range(1, 12) as $month) {
             $date = $year . '-' . sprintf('%02d', $month) . '-01';
             $e_r_adj = ExchangeRate::where('date', '<=', $date)->orderBy('date', 'DESC')->first();
-            $result[$month] = $e_r_adj->amount;
+            $result[$month] = $e_r_adj->amount ?? 0
+            ;
         }
         return $result;
     }
@@ -1035,7 +1374,7 @@ class BudgetController extends Controller
             $e_r_adj = ExRateSourceAndApp::where('year', $year)
                 ->where('month', $month)
                 ->first();
-            $result[$month] = $e_r_adj->amount;
+            $result[$month] = $e_r_adj->amount ?? 0;
         }
         return $result;
     }
@@ -1072,5 +1411,225 @@ class BudgetController extends Controller
             die();
         }
         return $value->amount;
+    }
+
+    /**
+     * [insertBudgetDataExcel description]
+     *
+     * @param   [type]  $spreadsheet               [$spreadsheet description]
+     * @param   [type]  $budget_data               [$budget_data description]
+     * @param   [type]  $today_m                   [$today_m description]
+     * @param   [type]  $headers_row               [$headers_row description]
+     * @param   [type]  $current_row               [$current_row description]
+     * @param   [type]  $arr                       [$arr description]
+     * @param   [type]  $data_credit_notes_totals  [$data_credit_notes_totals description]
+     * @param   [type]  $year                      [$year description]
+     *
+     * @return  [type]                             [return description]
+     */
+    public function insertBudgetDataExcel($spreadsheet, $budget_data, $today_m, $headers_row, &$current_row, $arr, $data_credit_notes_totals, $year)
+    {
+        $today_m = $budget_data['today_m'];
+        $budgets_result = $budget_data['budgets_result'];
+        $expenses_result = $budget_data['expenses_result'];
+        $budget_concepts_result = $budget_data['budget_concepts_result'];
+        $budget_concepts_description = $budget_data['budget_concepts_description'];
+        $budget_categories_result = $budget_data['budget_categories_result'];
+
+        //Write headers
+        foreach ($arr as $key => $value) {
+            $spreadsheet->getActiveSheet()->setCellValue($value['column'] . $headers_row, $value['name']);
+        }
+
+        //columns
+        $cols[] = $concept_col = $arr['concept']['column'];
+        $cols[] = $annual_budget_col = $arr['annual_budget']['column'];
+        $cols[] = $ytd_total_col = $arr['ytd_total']['column'];
+        $cols[] = $available_col = $arr['available']['column'];
+
+        //columns with same (sum) formula 
+        $cols_header_totals[] = $annual_budget_col;
+        $cols_header_totals[] = $ytd_total_col;
+
+        $header_rows = [];
+        // budget categories
+        // Log::warning($budget_concepts_description);
+        // Log::info($budgets_result);
+        foreach ($budget_categories_result as $id_budget_category => $category_description) {
+
+            if (isset($budget_concepts_result[$id_budget_category])) {
+
+                //budget concepts
+                foreach ($budget_concepts_result[$id_budget_category] as $id_budget_concept) {
+
+                    //get budget values
+                    if (isset($budget_concepts_description[$id_budget_concept])) {
+                        $concept_description = $budget_concepts_description[$id_budget_concept];
+                        $annual_budget = $budgets_result[$id_budget_concept]['amount'] ?? 0;
+
+                        //create excel addresses
+                        $first_month_cell = $arr[1]['column'] . $current_row;
+                        $last_month_cell = $arr[12]['column'] . $current_row;
+                        $ytd_total_cell = $ytd_total_col . $current_row;
+                        $annual_budget_cell = $annual_budget_col . $current_row;
+                        $available_cell = $available_col . $current_row;
+
+                        //write cells
+                        $spreadsheet->getActiveSheet()
+                            ->setCellValue($concept_col . $current_row, $concept_description)
+                            ->setCellValue($annual_budget_col . $current_row, $annual_budget);
+                        $ytd_total_formula = '=SUM(' . $first_month_cell . ':' . $last_month_cell . ')';
+                        $available_formula = '=' . $annual_budget_cell . '-' . $ytd_total_cell;
+                        $spreadsheet->getActiveSheet()
+                            ->setCellValue($ytd_total_col . $current_row, $ytd_total_formula)
+                            ->setCellValue($available_col . $current_row, $available_formula);
+
+                        //paint yellow row
+                        foreach ($cols as $column) {
+                            $this->setYellowFormat($column . $current_row, $spreadsheet);
+                        }
+
+                        //normal currency format
+                        $currency_range = $first_month_cell . ':' . $annual_budget_cell;
+                        $this->setCurrencyFormat($currency_range, $spreadsheet);
+
+                        //currency format with red formating in negative numbers
+                        $this->setBalanceCurrencyFormat($available_cell, $spreadsheet);
+                        foreach (range(1, 12) as $month) {
+                            $month_col = $arr[$month]['column'];
+
+                            //paint yellow row
+                            $this->setYellowFormat($month_col . $current_row, $spreadsheet);
+                            $amount = $expenses_result[$id_budget_concept][$month];
+
+                            $other_amount = 0;
+                            // if($id_budget_concept == 54){//cantidad de credit notes se agregan a "10.10 Covid Contingency (cash)"
+                            //     $other_amount = is_array($data_credit_notes_totals[$year][$month]) ? array_sum($data_credit_notes_totals[$year][$month]) : 0;
+                            //     $amount += $other_amount;
+                            // }
+
+                            //write expense amount for the current month
+                            $spreadsheet->getActiveSheet()
+                                ->setCellValue($month_col . $current_row, $amount);
+                        }
+
+                        //collapse and group
+                        $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setOutlineLevel(1);
+                        $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setVisible(false);
+                        $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setCollapsed(true);
+                        $current_row++;
+                    }
+                }
+
+                //budget category header
+                $spreadsheet->getActiveSheet()
+                    ->setCellValue($concept_col . $current_row, $category_description);
+                $spreadsheet->getActiveSheet()->getRowDimension($current_row)->setCollapsed(true);
+
+                foreach ($cols as $column) {
+                    //paint gray row
+                    $this->setGrayFormat($column . $current_row, $spreadsheet);
+
+                    //make bold
+                    $spreadsheet->getActiveSheet()->getStyle($column . $current_row)->getFont()->setBold(true);
+                }
+
+                //save header rows to be used later
+                $header_rows[] = $current_row;
+
+                //get first and last row number of children
+                $first_children_row = $current_row - count($budget_concepts_result[$id_budget_category]);
+                $last_children_row = $current_row - 1;
+
+                //get cells of other columns
+                $ytd_total_cell = $ytd_total_col . $current_row;
+                $annual_budget_cell = $annual_budget_col . $current_row;
+
+                //create sum formulas
+                foreach ($cols_header_totals as $column) {
+                    $first_cell = $column . $first_children_row;
+                    $last_cell = $column . $last_children_row;
+                    $sum_formula = '=SUM(' . $first_cell . ':' . $last_cell . ')';
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($column . $current_row, $sum_formula);
+                }
+
+                //create sum formulas (months)
+                foreach (range(1, 12) as $month) {
+                    $month_col = $arr[$month]['column'];
+
+                    //paint gray row
+                    $this->setGrayFormat($month_col . $current_row, $spreadsheet);
+                    $first_cell = $month_col . $first_children_row;
+                    $last_cell = $month_col . $last_children_row;
+
+                    //make bold
+                    $spreadsheet->getActiveSheet()->getStyle($month_col . $current_row)->getFont()->setBold(true);
+
+                    //sum formula for months
+                    $sum_formula = '=SUM(' . $first_cell . ':' . $last_cell . ')';
+                    $spreadsheet->getActiveSheet()
+                        ->setCellValue($month_col . $current_row, $sum_formula);
+                }
+
+                //(available) formula
+                $available_formula = '=' . $annual_budget_cell . '-' . $ytd_total_cell;
+
+                //write (available) formula
+                $spreadsheet->getActiveSheet()
+                    ->setCellValue($available_col . $current_row, $available_formula);
+
+                //set currency format
+                foreach (range($arr[1]['column'], $annual_budget_col) as $column) {
+                    $this->setCurrencyFormat($column . $current_row, $spreadsheet);
+                }
+                $available_cell = $available_col . $current_row;
+                $this->setBalanceCurrencyInverseFormat($available_cell, $spreadsheet);
+                $current_row++;
+            }
+        }
+
+        //set dark gray background for grand totals row
+        foreach ($cols as $column) {
+            $this->setDarkGrayFormat($column . $current_row, $spreadsheet);
+            $spreadsheet->getActiveSheet()->getStyle($column . $current_row)->getFont()->setBold(true);
+        }
+        foreach (range(1, 12) as $month) {
+            $month_col = $arr[$month]['column'];
+            $this->setDarkGrayFormat($month_col . $current_row, $spreadsheet);
+
+            //make bold
+            $spreadsheet->getActiveSheet()->getStyle($month_col . $current_row)->getFont()->setBold(true);
+        }
+
+        //disbursements row
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($concept_col . $current_row, 'DISBURSEMENTS');
+
+        //declare cells
+        $ytd_total_cell = $ytd_total_col . $current_row;
+        $annual_budget_cell = $annual_budget_col . $current_row;
+
+        //set formula for (available) column
+        $available_formula = '=' . $annual_budget_cell . '-' . $ytd_total_cell;
+        $spreadsheet->getActiveSheet()
+            ->setCellValue($available_col . $current_row, $available_formula);
+        //set sum formulas for disbursements row
+        foreach (range($arr[1]['column'], $annual_budget_col) as $column) {
+            $sum_formula = '=';
+            foreach ($header_rows as $row) {
+                $sum_formula .= '+' . $column . $row;
+            }
+            $spreadsheet->getActiveSheet()
+                ->setCellValue($column . $current_row, $sum_formula);
+            $this->setCurrencyFormat($column . $current_row, $spreadsheet);
+        }
+
+        $spreadsheet->getActiveSheet()->setAutoFilter('A' . $headers_row . ':' . $available_col . $headers_row);
+        $spreadsheet->getActiveSheet()->freezePane('A3');
+
+        //format as balance currency (available) column
+        $available_cell = $available_col . $current_row;
+        $this->setBalanceCurrencyInverseFormat($available_cell, $spreadsheet);
     }
 }

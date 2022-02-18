@@ -20,11 +20,11 @@
                                     <label for="residencias">Residencias</label>
                                     <select class="form-control" id="residencias" name="residencias" required>
                                         <option value="">Selecciona una opción</option>
-                                        <option value="hoadmin_la_vista">La vista</option>
-                                        <option value="hoadmin_antigua">Antigua</option>
-                                        <option value="hoadmin_villa_la_paloma">Villa La Paloma</option>
-                                        <option value="hoadmin_cresta">Cresta del Mar</option>
-                                        <option value="hoadmin_libertad_1065">Libertad 1065</option>
+                                        <option value="hoaadmin_la_vista">La vista</option>
+                                        <option value="hoaadmin_antigua">Antigua</option>
+                                        <option value="hoaadmin_villa_la_paloma">Villa La Paloma</option>
+                                        <option value="hoaadmin_cresta">Cresta del Mar</option>
+                                        <option value="hoaadmin_libertad_1065">Libertad 1065</option>
                                     </select>
                                 </div>
                             </div>
